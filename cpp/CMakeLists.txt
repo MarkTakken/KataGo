@@ -248,6 +248,7 @@ add_executable(katago
   core/rand_helpers.cpp
   core/sha2.cpp
   core/test.cpp
+  core/threadsafecounter.cpp
   core/threadsafequeue.cpp
   core/timer.cpp
   game/board.cpp
@@ -258,6 +259,7 @@ add_executable(katago
   dataio/trainingwrite.cpp
   dataio/loadmodel.cpp
   dataio/homedata.cpp
+  dataio/files.cpp
   neuralnet/nninputs.cpp
   neuralnet/modelversion.cpp
   neuralnet/nneval.cpp
@@ -270,7 +272,9 @@ add_executable(katago
   search/searchresults.cpp
   search/asyncbot.cpp
   search/distributiontable.cpp
+  search/localpattern.cpp
   search/subtreevaluebiastable.cpp
+  search/patternbonustable.cpp
   search/analysisdata.cpp
   program/gtpconfig.cpp
   program/setup.cpp
