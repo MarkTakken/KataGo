@@ -317,8 +317,8 @@ static void checkNonEmpty(const vector<SgfNode*>& nodes) {
 
 XYSize Sgf::getXYSize() const {
   checkNonEmpty(nodes);
-  int xSize;
-  int ySize;
+  int xSize = 0; //Initialize to 0 to suppress spurious clang compiler warning.
+  int ySize = 0; //Initialize to 0 to suppress spurious clang compiler warning.
   if(!nodes[0]->hasProperty("SZ"))
     return XYSize(19,19); //Some SGF files don't specify, in that case assume 19
 
@@ -382,6 +382,8 @@ float Sgf::getKomi() const {
       komi = 7.0f;
     else if(komi == 0)
       komi = 0.0f;
+    else if(komi == 6.5 || komi == 7.5 || komi == 7)
+    {}
     else
       propertyFail("Currently no case implemented for foxwq komi: " + Global::floatToString(komi));
   }

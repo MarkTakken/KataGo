@@ -77,7 +77,8 @@ static void writeLine(
   vector<AnalysisData> buf;
   if(!baseHist.isGameFinished) {
     int minMovesToTryToGet = 0; //just get the default number
-    search->getAnalysisData(buf,minMovesToTryToGet,false,9);
+    bool duplicateForSymmetries = true;
+    search->getAnalysisData(buf,minMovesToTryToGet,false,9,duplicateForSymmetries);
   }
   cout << buf.size() << " ";
   for(int i = 0; i<buf.size(); i++) {
@@ -1244,7 +1245,7 @@ int MainCmds::dataminesgfs(int argc, const char* const* argv) {
   // ---------------------------------------------------------------------------------------------------
   //SGF MODE
 
-  auto processSgfGame = [&logger,&excludeHashes,&gameInit,&nnEval,&expensiveEvaluateMove,autoKomi,&gameModeFastThreshold,&maxDepth,&numFilteredSgfs,&maxHandicap,&maxPolicy](
+  auto processSgfGame = [&logger,&gameInit,&nnEval,&expensiveEvaluateMove,autoKomi,&gameModeFastThreshold,&maxDepth,&numFilteredSgfs,&maxHandicap,&maxPolicy](
     Search* search, Rand& rand, const string& fileName, CompactSgf* sgf, bool blackOkay, bool whiteOkay
   ) {
     //Don't use the SGF rules - randomize them for a bit more entropy

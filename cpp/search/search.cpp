@@ -18,6 +18,38 @@ ReportedSearchValues::ReportedSearchValues()
 {}
 ReportedSearchValues::~ReportedSearchValues()
 {}
+ReportedSearchValues::ReportedSearchValues(const Search& search, double winLossValueAvg, double noResultValueAvg, double scoreMeanAvg, double scoreMeanSqAvg,
+                                           double leadAvg, double utilityAvg, int64_t totalVisits) {
+  winLossValue = winLossValueAvg;
+  noResultValue = noResultValueAvg;
+  double scoreMean = scoreMeanAvg;
+  double scoreMeanSq = scoreMeanSqAvg;
+  double scoreStdev = Search::getScoreStdev(scoreMean,scoreMeanSq);
+  staticScoreValue = ScoreValue::expectedWhiteScoreValue(scoreMean,scoreStdev,0.0,2.0,search.rootBoard);
+  dynamicScoreValue = ScoreValue::expectedWhiteScoreValue(scoreMean,scoreStdev,search.recentScoreCenter,search.searchParams.dynamicScoreCenterScale,search.rootBoard);
+  expectedScore = scoreMean;
+  expectedScoreStdev = scoreStdev;
+  lead = leadAvg;
+  utility = utilityAvg;
+
+  //Clamp. Due to tiny floating point errors, these could be outside range.
+  if(winLossValue < -1.0) winLossValue = -1.0;
+  if(winLossValue > 1.0) winLossValue = 1.0;
+  if(noResultValue < 0.0) noResultValue = 0.0;
+  if(noResultValue > 1.0-abs(winLossValue)) noResultValue = 1.0-abs(winLossValue);
+
+  winValue = 0.5 * (winLossValue + (1.0 - noResultValue));
+  lossValue = 0.5 * (-winLossValue + (1.0 - noResultValue));
+
+  //Handle float imprecision
+  if(winValue < 0.0) winValue = 0.0;
+  if(winValue > 1.0) winValue = 1.0;
+  if(lossValue < 0.0) lossValue = 0.0;
+  if(lossValue > 1.0) lossValue = 1.0;
+  visits = totalVisits;
+
+}
+
 
 NodeStatsAtomic::NodeStatsAtomic()
   :visits(0),
@@ -1244,6 +1276,16 @@ void Search::beginSearch(bool pondering) {
       rootNode->patternBonusHash = Hash128();
   }
 
+  if(searchParams.rootSymmetryPruning) {
+    SymmetryHelpers::markDuplicateMoveLocs(rootBoard,rootHistory,rootSymDupLoc,rootSymmetries);
+  }
+  else {
+    //Just in case, don't leave the values undefined.
+    std::fill(rootSymDupLoc,rootSymDupLoc+Board::MAX_ARR_SIZE, false);
+    rootSymmetries.clear();
+    rootSymmetries.push_back(0);
+  }
+
   SearchThread dummyThread(-1, *this);
 
   if(rootNode == NULL) {
@@ -1372,7 +1414,7 @@ void Search::applyRecursivelyPostOrderMulithreaded(const vector<SearchNode*>& no
         applyRecursivelyPostOrderMulithreadedHelper(nodes[i],threadIdx,rand,f);
     }
     else {
-      int offset = ((int)rand->nextUInt() + threadIdx) % numChildren;
+      int offset = (int)((rand->nextUInt() + (uint32_t)threadIdx) % numChildren);
       for(int i = offset; i<numChildren; i++)
         applyRecursivelyPostOrderMulithreadedHelper(nodes[i],threadIdx,rand,f);
       for(int i = 0; i<offset; i++)
@@ -2017,6 +2059,11 @@ bool Search::isAllowedRootMove(Loc moveLoc) const {
        (rootSafeArea[moveLoc] == opp || rootSafeArea[moveLoc] == rootPla))
       return false;
   }
+
+  if(searchParams.rootSymmetryPruning && moveLoc != Board::PASS_LOC && rootSymDupLoc[moveLoc]) {
+    return false;
+  }
+
   return true;
 }
 
@@ -3350,7 +3397,7 @@ bool Search::playoutDescend(
       if(searchParams.subtreeValueBiasFactor != 0) {
         if(node.prevMoveLoc != Board::NULL_LOC) {
           assert(subtreeValueBiasTable != NULL);
-          child->subtreeValueBiasTableEntry = std::move(subtreeValueBiasTable->get(thread.pla, node.prevMoveLoc, child->prevMoveLoc, thread.board));
+          child->subtreeValueBiasTableEntry = subtreeValueBiasTable->get(thread.pla, node.prevMoveLoc, child->prevMoveLoc, thread.board);
         }
       }
 

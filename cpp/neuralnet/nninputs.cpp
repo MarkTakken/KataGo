@@ -610,6 +610,8 @@ Loc SymmetryHelpers::getSymLoc(int x, int y, const Board& board, int symmetry) {
 }
 
 Loc SymmetryHelpers::getSymLoc(Loc loc, const Board& board, int symmetry) {
+  if(loc == Board::NULL_LOC || loc == Board::PASS_LOC)
+    return loc;
   return getSymLoc(Location::getX(loc,board.x_size), Location::getY(loc,board.x_size), board, symmetry);
 }
 
@@ -639,6 +641,79 @@ Board SymmetryHelpers::getSymBoard(const Board& board, int symmetry) {
   if(symKoLoc != Board::NULL_LOC)
     symBoard.setSimpleKoLoc(symKoLoc);
   return symBoard;
+}
+
+void SymmetryHelpers::markDuplicateMoveLocs(const Board& board, const BoardHistory& hist, bool* isSymDupLoc, std::vector<int>& validSymmetries) {
+  std::fill(isSymDupLoc, isSymDupLoc + Board::MAX_ARR_SIZE, false);
+  validSymmetries.clear();
+  validSymmetries.reserve(NNInputs::NUM_SYMMETRY_COMBINATIONS-1);
+  validSymmetries.push_back(0);
+
+  //The board should never be considered symmetric if any moves are banned by ko or superko
+  if(board.ko_loc != Board::NULL_LOC)
+    return;
+  for(int y = 0; y < board.y_size; y++) {
+    for(int x = 0; x < board.x_size; x++) {
+      if(hist.superKoBanned[Location::getLoc(x, y, board.x_size)])
+        return;
+    }
+  }
+
+  //If board has different sizes of x and y, we will not search symmetries involved with transpose.
+  int symmetrySearchUpperBound = board.x_size == board.y_size ? NNInputs::NUM_SYMMETRY_COMBINATIONS : NNInputs::NUM_SYMMETRIES_WITHOUT_TRANSPOSE;
+
+  for(int symmetry = 1; symmetry < symmetrySearchUpperBound; symmetry++) {
+    bool isBoardSym = true;
+    for(int y = 0; y < board.y_size; y++) {
+      for(int x = 0; x < board.x_size; x++) {
+        Loc loc = Location::getLoc(x, y, board.x_size);
+        Loc symLoc = getSymLoc(x, y, board,symmetry);
+        bool isStoneSym = (board.colors[loc] == board.colors[symLoc]);
+        bool isKoRecapBlockedSym = hist.encorePhase > 0 ? hist.koRecapBlocked[loc] == hist.koRecapBlocked[symLoc] : true;
+        bool isSecondEncoreStartColorsSym = hist.encorePhase == 2 ? hist.secondEncoreStartColors[loc] == hist.secondEncoreStartColors[symLoc] : true;
+        if(!isStoneSym || !isKoRecapBlockedSym || !isSecondEncoreStartColorsSym) {
+          isBoardSym = false;
+          break;
+        }
+      }
+      if(!isBoardSym)
+        break;
+    }
+    if(isBoardSym)
+      validSymmetries.push_back(symmetry);
+  }
+
+  //The way we iterate is to achieve https://senseis.xmp.net/?PlayingTheFirstMoveInTheUpperRightCorner%2FDiscussion
+  //Reverse the iteration order for white, so that natural openings result in white on the left and black on the right
+  //as is common now in SGFs
+  if(hist.presumedNextMovePla == P_BLACK) {
+    for(int x = board.x_size-1; x >= 0; x--) {
+      for(int y = 0; y < board.y_size; y++) {
+        for(int symmetry: validSymmetries) {
+          if(symmetry == 0)
+            continue;
+          Loc loc = Location::getLoc(x, y, board.x_size);
+          Loc symLoc = getSymLoc(x, y, board, symmetry);
+          if(!isSymDupLoc[loc] && loc != symLoc)
+            isSymDupLoc[symLoc] = true;
+        }
+      }
+    }
+  }
+  else {
+    for(int x = 0; x < board.x_size; x++) {
+      for(int y = board.y_size-1; y >= 0; y--) {
+        for(int symmetry: validSymmetries) {
+          if(symmetry == 0)
+            continue;
+          Loc loc = Location::getLoc(x, y, board.x_size);
+          Loc symLoc = getSymLoc(x, y, board, symmetry);
+          if(!isSymDupLoc[loc] && loc != symLoc)
+            isSymDupLoc[symLoc] = true;
+        }
+      }
+    }
+  }
 }
 
 //-------------------------------------------------------------------------------------------------------------

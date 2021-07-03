@@ -257,7 +257,7 @@ int MainCmds::analysis(int argc, const char* const* argv) {
     ret["isDuringSearch"] = isDuringSearch;
 
     bool success = search->getAnalysisJson(
-      request->perspective, request->board, request->hist,
+      request->perspective,
       request->analysisPVLen, ownershipMinVisits, preventEncore, request->includePolicy,
       request->includeOwnership,request->includeMovesOwnership,request->includePVVisits,
       ret
@@ -269,7 +269,7 @@ int MainCmds::analysis(int argc, const char* const* argv) {
   };
 
   auto analysisLoop = [
-    &logger,&toAnalyzeQueue,&toWriteQueue,&preventEncore,&reportAnalysis,&reportNoAnalysis,&logSearchInfo,&nnEval,&openRequestsMutex,&openRequests
+    &logger,&toAnalyzeQueue,&reportAnalysis,&reportNoAnalysis,&logSearchInfo,&nnEval,&openRequestsMutex,&openRequests
   ](AsyncBot* bot, int threadIdx) {
     while(true) {
       std::pair<std::pair<int64_t,int64_t>,AnalyzeRequest*> analysisItem;
@@ -828,11 +828,10 @@ int MainCmds::analysis(int argc, const char* const* argv) {
             localCfg.overrideKeys(overrideSettings);
             loadParams(localCfg, rbase.params, rbase.perspective, defaultPerspective);
             SearchParams::failIfParamsDifferOnUnchangeableParameter(defaultParams,rbase.params);
-            //Hard failure on unused override keys newly present in the config
+            //Soft failure on unused override keys newly present in the config
             vector<string> unusedKeys = localCfg.unusedKeys();
             if(unusedKeys.size() > 0) {
-              reportErrorForId(rbase.id, "overrideSettings", string("Unknown config params: ") + Global::concat(unusedKeys,","));
-              continue;
+              reportWarningForId(rbase.id, "overrideSettings", string("Unknown config params: ") + Global::concat(unusedKeys,","));
             }
           }
           catch(const StringError& exception) {

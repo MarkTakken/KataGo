@@ -50,7 +50,7 @@ bool Search::getPlaySelectionValues(
   double radiusBuf[NNPos::MAX_NN_POLICY_SIZE];
   bool result = getPlaySelectionValues(
     node,locs,playSelectionValues,retVisitCounts,scaleMaxToAtLeast,allowDirectPolicyMoves,
-    false,lcbBuf,radiusBuf
+    false,false,lcbBuf,radiusBuf
   );
   return result;
 }
@@ -58,7 +58,7 @@ bool Search::getPlaySelectionValues(
 bool Search::getPlaySelectionValues(
   const SearchNode& node,
   vector<Loc>& locs, vector<double>& playSelectionValues, vector<double>* retVisitCounts, double scaleMaxToAtLeast,
-  bool allowDirectPolicyMoves, bool alwaysComputeLcb,
+  bool allowDirectPolicyMoves, bool alwaysComputeLcb, bool neverUseLcb,
   //Note: lcbBuf is signed from the player to move's perspective
   double lcbBuf[NNPos::MAX_NN_POLICY_SIZE], double radiusBuf[NNPos::MAX_NN_POLICY_SIZE]
 ) const {
@@ -155,7 +155,7 @@ bool Search::getPlaySelectionValues(
   }
 
   //Now compute play selection values taking into account LCB
-  if(alwaysComputeLcb || (searchParams.useLcbForSelection && numChildren > 0)) {
+  if(!neverUseLcb && (alwaysComputeLcb || (searchParams.useLcbForSelection && numChildren > 0))) {
     double bestLcb = -1e10;
     int bestLcbIndex = -1;
     for(int i = 0; i<numChildren; i++) {
@@ -403,35 +403,7 @@ bool Search::getNodeValues(const SearchNode& node, ReportedSearchValues& values)
 
   if(weightSum <= 0.0)
     return false;
-
-  values.winLossValue = winLossValueAvg;
-  values.noResultValue = noResultValueAvg;
-  double scoreMean = scoreMeanAvg;
-  double scoreMeanSq = scoreMeanSqAvg;
-  double scoreStdev = getScoreStdev(scoreMean,scoreMeanSq);
-  values.staticScoreValue = ScoreValue::expectedWhiteScoreValue(scoreMean,scoreStdev,0.0,2.0,rootBoard);
-  values.dynamicScoreValue = ScoreValue::expectedWhiteScoreValue(scoreMean,scoreStdev,recentScoreCenter,searchParams.dynamicScoreCenterScale,rootBoard);
-  values.expectedScore = scoreMean;
-  values.expectedScoreStdev = scoreStdev;
-  values.lead = leadAvg;
-  values.utility = utilityAvg;
-
-  //Clamp. Due to tiny floating point errors, these could be outside range.
-  if(values.winLossValue < -1.0) values.winLossValue = -1.0;
-  if(values.winLossValue > 1.0) values.winLossValue = 1.0;
-  if(values.noResultValue < 0.0) values.noResultValue = 0.0;
-  if(values.noResultValue > 1.0-abs(values.winLossValue)) values.noResultValue = 1.0-abs(values.winLossValue);
-
-  values.winValue = 0.5 * (values.winLossValue + (1.0 - values.noResultValue));
-  values.lossValue = 0.5 * (-values.winLossValue + (1.0 - values.noResultValue));
-
-  //Handle float imprecision
-  if(values.winValue < 0.0) values.winValue = 0.0;
-  if(values.winValue > 1.0) values.winValue = 1.0;
-  if(values.lossValue < 0.0) values.lossValue = 0.0;
-  if(values.lossValue > 1.0) values.lossValue = 1.0;
-  values.visits = visits;
-
+  values = ReportedSearchValues(*this,winLossValueAvg, noResultValueAvg, scoreMeanAvg, scoreMeanSqAvg, leadAvg, utilityAvg, visits);
   return true;
 }
 
@@ -600,7 +572,7 @@ bool Search::getPolicySurpriseAndEntropy(double& surpriseRet, double& searchEntr
   double lcbBuf[NNPos::MAX_NN_POLICY_SIZE];
   double radiusBuf[NNPos::MAX_NN_POLICY_SIZE];
   bool suc = getPlaySelectionValues(
-    *rootNode,locs,playSelectionValues,NULL,1.0,allowDirectPolicyMoves,alwaysComputeLcb,lcbBuf,radiusBuf
+    *rootNode,locs,playSelectionValues,NULL,1.0,allowDirectPolicyMoves,alwaysComputeLcb,false,lcbBuf,radiusBuf
   );
   if(!suc)
     return false;
@@ -873,16 +845,16 @@ AnalysisData Search::getAnalysisDataOfSingleChild(
 }
 
 void Search::getAnalysisData(
-  vector<AnalysisData>& buf,int minMovesToTryToGet, bool includeWeightFactors, int maxPVDepth
+  vector<AnalysisData>& buf,int minMovesToTryToGet, bool includeWeightFactors, int maxPVDepth, bool duplicateForSymmetries
 ) const {
   buf.clear();
   if(rootNode == NULL)
     return;
-  getAnalysisData(*rootNode, buf, minMovesToTryToGet, includeWeightFactors, maxPVDepth);
+  getAnalysisData(*rootNode, buf, minMovesToTryToGet, includeWeightFactors, maxPVDepth, duplicateForSymmetries);
 }
 
 void Search::getAnalysisData(
-  const SearchNode& node, vector<AnalysisData>& buf, int minMovesToTryToGet, bool includeWeightFactors, int maxPVDepth
+  const SearchNode& node, vector<AnalysisData>& buf, int minMovesToTryToGet, bool includeWeightFactors, int maxPVDepth, bool duplicateForSymmetries
 ) const {
   buf.clear();
   vector<const SearchNode*> children;
@@ -910,7 +882,7 @@ void Search::getAnalysisData(
     assert(numChildren <= NNPos::MAX_NN_POLICY_SIZE);
 
     bool alwaysComputeLcb = true;
-    bool success = getPlaySelectionValues(node, scratchLocs, scratchValues, NULL, 1.0, false, alwaysComputeLcb, lcbBuf, radiusBuf);
+    bool success = getPlaySelectionValues(node, scratchLocs, scratchValues, NULL, 1.0, false, alwaysComputeLcb, false, lcbBuf, radiusBuf);
     if(!success)
       return;
 
@@ -1041,6 +1013,30 @@ void Search::getAnalysisData(
     }
   }
   std::stable_sort(buf.begin(),buf.end());
+
+  if(duplicateForSymmetries && searchParams.rootSymmetryPruning && rootSymmetries.size() > 1) {
+    vector<AnalysisData> newBuf;
+    std::set<Loc> isDone;
+    for(int i = 0; i<buf.size(); i++) {
+      const AnalysisData& data = buf[i];
+      for(int symmetry : rootSymmetries) {
+        Loc symMove = SymmetryHelpers::getSymLoc(data.move, rootBoard, symmetry);
+        if(contains(isDone,symMove))
+          continue;
+        isDone.insert(symMove);
+        newBuf.push_back(data);
+        //Replace the fields that need to be adjusted for symmetry
+        AnalysisData& newData = newBuf.back();
+        newData.move = symMove;
+        if(symmetry != 0)
+          newData.isSymmetryOf = data.move;
+        newData.symmetry = symmetry;
+        for(int j = 0; j<newData.pv.size(); j++)
+          newData.pv[j] = SymmetryHelpers::getSymLoc(newData.pv[j], rootBoard, symmetry);
+      }
+    }
+    buf = std::move(newBuf);
+  }
 
   for(int i = 0; i<buf.size(); i++)
     buf[i].order = i;
@@ -1188,7 +1184,8 @@ void Search::printTreeHelper(
   }
 
   vector<AnalysisData> analysisData;
-  getAnalysisData(node,analysisData,0,true,options.maxPVDepth_);
+  bool duplicateForSymmetries = false;
+  getAnalysisData(node,analysisData,0,true,options.maxPVDepth_,duplicateForSymmetries);
 
   int numChildren = analysisData.size();
 
@@ -1305,27 +1302,49 @@ double Search::getAverageTreeOwnershipHelper(vector<double>& accum, double minWe
   return desiredWeight;
 }
 
-json Search::getJsonOwnershipMap(const Player pla, const Player perspective, const Board& board, const SearchNode* node, double ownershipMinWeight) const {
+static double roundStatic(double x, double inverseScale) {
+  return round(x * inverseScale) / inverseScale;
+}
+static double roundDynamic(double x, int precision) {
+  double absx = abs(x);
+  if(absx <= 1e-60)
+    return x;
+  int orderOfMagnitude = (int)floor(log10(absx));
+  int roundingMagnitude = orderOfMagnitude - precision;
+  if(roundingMagnitude >= 0)
+    return round(x);
+  double inverseScale = pow(10.0,-roundingMagnitude);
+  return roundStatic(x, inverseScale);
+}
+
+
+json Search::getJsonOwnershipMap(const Player pla, const Player perspective, const Board& board, const SearchNode* node, double ownershipMinWeight, int symmetry) const {
   vector<double> ownership = getAverageTreeOwnership(ownershipMinWeight, node);
-  json ownerships = json::array();
+  vector<double> ownershipToOutput(board.y_size * board.x_size, 0.0);
+
   for(int y = 0; y < board.y_size; y++) {
     for(int x = 0; x < board.x_size; x++) {
       int pos = NNPos::xyToPos(x, y, nnXLen);
+      Loc symLoc = SymmetryHelpers::getSymLoc(x, y, board, symmetry);
+      int symPos = Location::getY(symLoc, board.x_size) * board.x_size + Location::getX(symLoc, board.x_size);
+      assert(symPos >= 0 && symPos < board.y_size * board.x_size);
+
       double o;
       if(perspective == P_BLACK || (perspective != P_BLACK && perspective != P_WHITE && pla == P_BLACK))
         o = -ownership[pos];
       else
         o = ownership[pos];
-      ownerships.push_back(o);
+      // Round to 10^-6 to limit the size of output.
+      // No guarantees that the serializer actually outputs something of this length rather than longer due to float wonkiness, but it should usually be true.
+      o = roundStatic(o, 1000000.0);
+      ownershipToOutput[symPos] = o;
     }
   }
-  return ownerships;
+  return json(ownershipToOutput);
 }
 
 bool Search::getAnalysisJson(
   const Player perspective,
-  const Board& board,
-  const BoardHistory& hist,
   int analysisPVLen,
   double ownershipMinWeight,
   bool preventEncore,
@@ -1337,8 +1356,12 @@ bool Search::getAnalysisJson(
 ) const {
   vector<AnalysisData> buf;
   static constexpr int minMoves = 0;
+  static constexpr int OUTPUT_PRECISION = 8;
 
-  getAnalysisData(buf, minMoves, false, analysisPVLen);
+  const Board& board = rootBoard;
+  const BoardHistory& hist = rootHistory;
+  bool duplicateForSymmetries = true;
+  getAnalysisData(buf, minMoves, false, analysisPVLen, duplicateForSymmetries);
 
   // Stats for all the individual moves
   json moveInfos = json::array();
@@ -1362,16 +1385,18 @@ bool Search::getAnalysisJson(
     json moveInfo;
     moveInfo["move"] = Location::toString(data.move, board);
     moveInfo["visits"] = data.numVisits;
-    moveInfo["utility"] = utility;
-    moveInfo["winrate"] = winrate;
-    moveInfo["scoreMean"] = lead;
-    moveInfo["scoreSelfplay"] = scoreMean;
-    moveInfo["scoreLead"] = lead;
-    moveInfo["scoreStdev"] = data.scoreStdev;
-    moveInfo["prior"] = data.policyPrior;
-    moveInfo["lcb"] = lcb;
-    moveInfo["utilityLcb"] = utilityLcb;
+    moveInfo["utility"] = roundDynamic(utility,OUTPUT_PRECISION);
+    moveInfo["winrate"] = roundDynamic(winrate,OUTPUT_PRECISION);
+    moveInfo["scoreMean"] = roundDynamic(lead,OUTPUT_PRECISION);
+    moveInfo["scoreSelfplay"] = roundDynamic(scoreMean,OUTPUT_PRECISION);
+    moveInfo["scoreLead"] = roundDynamic(lead,OUTPUT_PRECISION);
+    moveInfo["scoreStdev"] = roundDynamic(data.scoreStdev,OUTPUT_PRECISION);
+    moveInfo["prior"] = roundDynamic(data.policyPrior,OUTPUT_PRECISION);
+    moveInfo["lcb"] = roundDynamic(lcb,OUTPUT_PRECISION);
+    moveInfo["utilityLcb"] = roundDynamic(utilityLcb,OUTPUT_PRECISION);
     moveInfo["order"] = data.order;
+    if(data.isSymmetryOf != Board::NULL_LOC)
+      moveInfo["isSymmetryOf"] = Location::toString(data.isSymmetryOf, board);
 
     json pv = json::array();
     int pvLen =
@@ -1389,7 +1414,7 @@ bool Search::getAnalysisJson(
     }
 
     if(includeMovesOwnership)
-      moveInfo["ownership"] = getJsonOwnershipMap(rootPla, perspective, board, data.node, ownershipMinWeight);
+      moveInfo["ownership"] = getJsonOwnershipMap(rootPla, perspective, board, data.node, ownershipMinWeight, data.symmetry);
     moveInfos.push_back(moveInfo);
   }
   ret["moveInfos"] = moveInfos;
@@ -1397,7 +1422,7 @@ bool Search::getAnalysisJson(
   // Stats for root position
   {
     ReportedSearchValues rootVals;
-    bool suc = getRootValues(rootVals);
+    bool suc = getPrunedRootValues(rootVals);
     if(!suc)
       return false;
 
@@ -1415,11 +1440,11 @@ bool Search::getAnalysisJson(
 
     json rootInfo;
     rootInfo["visits"] = rootVals.visits;
-    rootInfo["winrate"] = winrate;
-    rootInfo["scoreSelfplay"] = scoreMean;
-    rootInfo["scoreLead"] = lead;
-    rootInfo["scoreStdev"] = rootVals.expectedScoreStdev;
-    rootInfo["utility"] = utility;
+    rootInfo["winrate"] = roundDynamic(winrate,OUTPUT_PRECISION);
+    rootInfo["scoreSelfplay"] = roundDynamic(scoreMean,OUTPUT_PRECISION);
+    rootInfo["scoreLead"] = roundDynamic(lead,OUTPUT_PRECISION);
+    rootInfo["scoreStdev"] = roundDynamic(rootVals.expectedScoreStdev,OUTPUT_PRECISION);
+    rootInfo["utility"] = roundDynamic(utility,OUTPUT_PRECISION);
 
     Hash128 thisHash;
     Hash128 symHash;
@@ -1437,9 +1462,11 @@ bool Search::getAnalysisJson(
     }
     rootInfo["thisHash"] = Global::uint64ToHexString(thisHash.hash1) + Global::uint64ToHexString(thisHash.hash0);
     rootInfo["symHash"] = Global::uint64ToHexString(symHash.hash1) + Global::uint64ToHexString(symHash.hash0);
+    rootInfo["currentPlayer"] = PlayerIO::playerToStringShort(rootPla);
 
     ret["rootInfo"] = rootInfo;
   }
+
   // Raw policy prior
   if(includePolicy) {
     float policyProbs[NNPos::MAX_NN_POLICY_SIZE];
@@ -1450,16 +1477,96 @@ bool Search::getAnalysisJson(
     for(int y = 0; y < board.y_size; y++) {
       for(int x = 0; x < board.x_size; x++) {
         int pos = NNPos::xyToPos(x, y, nnXLen);
-        policy.push_back(policyProbs[pos]);
+        policy.push_back(roundDynamic(policyProbs[pos],OUTPUT_PRECISION));
       }
     }
 
     int passPos = NNPos::locToPos(Board::PASS_LOC, board.x_size, nnXLen, nnYLen);
-    policy.push_back(policyProbs[passPos]);
+    policy.push_back(roundDynamic(policyProbs[passPos],OUTPUT_PRECISION));
     ret["policy"] = policy;
   }
+
   // Average tree ownership
-  if(includeOwnership)
-    ret["ownership"] = getJsonOwnershipMap(rootPla, perspective, board, rootNode, ownershipMinWeight);
+  if(includeOwnership) {
+    int symmetry = 0;
+    ret["ownership"] = getJsonOwnershipMap(rootPla, perspective, board, rootNode, ownershipMinWeight, symmetry);
+  }
+  return true;
+}
+
+//Compute all the stats of the root based on its children, pruning weights such that they are as expected
+//based on policy and utility. This is used to give accurate rootInfo even with a lot of wide root noise
+bool Search::getPrunedRootValues(ReportedSearchValues& values) const {
+  if(rootNode == NULL)
+    return false;
+  const SearchNode& node = *rootNode;
+  int childrenCapacity;
+  const SearchChildPointer* children = node.getChildren(childrenCapacity);
+
+  vector<double> playSelectionValues;
+  vector<Loc> locs; // not used
+  bool allowDirectPolicyMoves = false;
+  bool alwaysComputeLcb = false;
+  bool neverUseLcb = true;
+  getPlaySelectionValues(node,locs,playSelectionValues,NULL,1.0,allowDirectPolicyMoves,alwaysComputeLcb,neverUseLcb,NULL,NULL);
+
+  double winLossValueSum = 0.0;
+  double noResultValueSum = 0.0;
+  double scoreMeanSum = 0.0;
+  double scoreMeanSqSum = 0.0;
+  double leadSum = 0.0;
+  double utilitySum = 0.0;
+  double utilitySqSum = 0.0;
+  double weightSum = 0.0;
+  double weightSqSum = 0.0;
+  for(int i = 0; i<childrenCapacity; i++) {
+    const SearchNode* child = children[i].getIfAllocated();
+    if(child == NULL)
+      break;
+    NodeStats stats = NodeStats(child->stats);
+
+    if(stats.visits <= 0 || stats.weightSum <= 0.0)
+      continue;
+    double weight = playSelectionValues[i];
+    winLossValueSum += weight * stats.winLossValueAvg;
+    noResultValueSum += weight * stats.noResultValueAvg;
+    scoreMeanSum += weight * stats.scoreMeanAvg;
+    scoreMeanSqSum += weight * stats.scoreMeanSqAvg;
+    leadSum += weight * stats.leadAvg;
+    utilitySum += weight * stats.utilityAvg;
+    utilitySqSum += weight * stats.utilitySqAvg;
+    weightSqSum += weight * weight;
+    weightSum += weight;
+  }
+
+  //Also add in the direct evaluation of this node.
+  {
+    const NNOutput* nnOutput = node.getNNOutput();
+    //Root might be null if the search was terminated very fast
+    if(nnOutput == NULL)
+      return false;
+    double winProb = (double)nnOutput->whiteWinProb;
+    double lossProb = (double)nnOutput->whiteLossProb;
+    double noResultProb = (double)nnOutput->whiteNoResultProb;
+    double scoreMean = (double)nnOutput->whiteScoreMean;
+    double scoreMeanSq = (double)nnOutput->whiteScoreMeanSq;
+    double lead = (double)nnOutput->whiteLead;
+    double utility =
+      getResultUtility(winProb-lossProb, noResultProb)
+      + getScoreUtility(scoreMean, scoreMeanSq);
+
+    double weight = 1.0;
+    winLossValueSum += (winProb - lossProb) * weight;
+    noResultValueSum += noResultProb * weight;
+    scoreMeanSum += scoreMean * weight;
+    scoreMeanSqSum += scoreMeanSq * weight;
+    leadSum += lead * weight;
+    utilitySum += utility * weight;
+    utilitySqSum += utility * utility * weight;
+    weightSqSum += weight * weight;
+    weightSum += weight;
+  }
+  values = ReportedSearchValues(*this, winLossValueSum / weightSum, noResultValueSum / weightSum, scoreMeanSum / weightSum,
+                                scoreMeanSqSum / weightSum, leadSum / weightSum, utilitySum / weightSum, rootNode->stats.visits);
   return true;
 }
